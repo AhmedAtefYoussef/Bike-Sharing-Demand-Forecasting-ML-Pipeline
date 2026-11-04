@@ -1,144 +1,144 @@
-# Rush Hour: predicting hourly bike-sharing demand
+# Rush Hour: hourly bike-demand forecasting with a chained ML pipeline
 
-A five-phase chained machine-learning pipeline for the *Machine Learning, Winter 2026, Project 1* brief
-([Project_1_description.md](Project_1_description.md)). It predicts the hourly rental count `cnt` of a bike-sharing
-system and ends with a classifier for "high-demand" hours. Each phase implements one course algorithm and consumes
-the numeric artifact of the phase before it.
+A six-stage machine-learning pipeline that forecasts the hourly rental count of a bike-sharing system (`cnt`) and classifies the hours that are unusually busy. Each stage implements one algorithm and consumes the verified output of the stage before it. The core solvers are written in NumPy, and scikit-learn is used only for the seeded split and as a test oracle.
 
-| Phase | Algorithm | Consumes | Produces |
+## Highlights
+
+- Gradient descent, polynomial regression, bias-variance diagnosis, Ridge, Lasso and Elastic Net, and logistic regression, each in its own module with its own tests.
+- Hash-chained artifacts. Every stage stores the SHA-256 of the artifact it consumed and of the configuration, so a changed upstream result rebuilds everything downstream.
+- Leakage controls. Scalers, expansions, feature selection and class thresholds are fitted on training rows only. The hidden test file is read in one function, used once, and never used for tuning. A leak scanner and tests enforce this.
+- Reproducibility. The random seed is derived from the team roster in `config.yaml`, not typed by hand, and the notebook runs top to bottom from a single configuration cell.
+- A documented design history. The pipeline was run twice, and the second run changed one design choice, recorded with its evidence in the decision log.
+
+## Results
+
+Validation scores on the seeded 20% hold-out. R² and RMSE are on the original bike-count scale.
+
+| Stage | Model | Validation |
+|---|---|---|
+| 1 | Linear model on 36 weights, gradient descent at half the stability bound | R² 0.736, RMSE 94.7 |
+| 2 | Degree-3 polynomial in `temp`, plus working-day × hour interactions | R² 0.918, RMSE 52.8 |
+| 3 | Diagnosis: under-fitting. Target design with 282 weights | R² 0.941 (held-out days 0.946, chronological split 0.938) |
+| 4 | Three penalised methods tied within noise. Lasso on the surviving features | R² 0.941, RMSE 44.7 |
+| 5 | "Busier than three quarters of comparable hours" label, cut-off 0.25 | Accuracy 0.784, F1 0.659, ROC-AUC 0.885 |
+
+The source of truth is `artifacts/p1.json` to `p6.json`. The notebook and the report read their numbers from those files.
+
+Validation scores are slightly optimistic, because the tuning used the same rows. The held-out-day and chronological estimates are reported beside them.
+
+**Design iteration.** The first pass fitted `log1p(cnt)` and reached R² 0.939 on validation, 0.943 on held-out days and 0.914 chronologically (git tag `v1-submitted`). The second pass changed only the target transform, to a power transform with exponent 0.1 (ADR-017). It mainly improves the estimate for unseen months. The alternatives that were measured and rejected are listed in ADR-018 and in `exp/v2/`.
+
+## Architecture
+
+| Stage | Algorithm | Consumes | Produces |
 |---|---|---|---|
 | 1 | Gradient descent, written from scratch | the seeded train/validation split | weight vector, learning rate, iteration count |
-| 2 | Polynomial regression, fitted with the Phase 1 gradient descent | Phase 1 weights as the starting point | degree and expanded feature list |
-| 3 | Bias–variance diagnosis, plus one chronological split | Phase 2 degree and features | diagnosis and target complexity |
-| 4 | Ridge, Lasso and Elastic Net (own solvers) | Phase 3 target and diagnosis | λ per method, surviving features, a verdict for every input column |
-| 5 | Logistic regression (own gradient descent) | Phase 4 surviving features | classifier, validation metrics, retrospective |
+| 2 | Polynomial regression, fitted with the stage 1 gradient descent | stage 1 weights as the starting point | degree and expanded feature list |
+| 3 | Bias-variance diagnosis, plus one chronological split | stage 2 degree and features | diagnosis and target complexity |
+| 4 | Ridge, Lasso and Elastic Net (own solvers) | stage 3 target and diagnosis | λ per method, surviving features, a verdict for every input column |
+| 5 | Logistic regression (own gradient descent) | stage 4 surviving features | classifier, validation metrics, retrospective |
+| 6 | Submission: refit the recommended model and predict the hidden test rows | the stage 4 artifact (the recommended model) | `sample_submission.csv` |
+
+```
+train.csv ─► seeded split ─► [1 GD] ─► [2 poly] ─► [3 bias-variance] ─► [4 penalised] ─► [5 logistic]
+                                 │          │              │                  │                │
+                                 └──────────┴──────────────┴──── artifacts/p1.json … p5.json ──┘
+                                                                                                │
+                                              test.csv ─► [6 submission, the only module that reads test rows]
+```
+
+Each artifact stores the hash of the artifact it consumed. Stage 2 starts from the stage 1 weights, so its first loss must equal the last loss of stage 1, and the code asserts this. `tools/chain_check.py` and assertions in the notebook verify the rest of the chain.
 
 ## Deliverables
 
 | File | What it is |
 |---|---|
-| [rush_hour.ipynb](rush_hour.ipynb) | The executed notebook, built from `nb/`: a configuration cell, then each phase with its Expectation, code and Outcome cells. It is self-contained, so on Google Colab only the notebook, `train.csv` and `test.csv` need to be uploaded |
-| [report.pdf](report.pdf) | The report (at most 6 pages), every number read from the artifact files |
-| [sample_submission.csv](sample_submission.csv) | Predictions for `data/test.csv`, one row per test row in the same order. Upload this file from the repository root; `data/sample_submission.csv` is the empty template that came with the brief |
-| [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) | Rehearsal guide for the live evaluation: formulas, change-and-re-run drills, likely questions |
-
-## Results
-
-Validation scores on the seeded 20% hold-out (team seed 44615). R² and RMSE are on the bike scale.
-
-| Phase | Model | Validation |
-|---|---|---|
-| 1 | linear model on 36 weights, gradient descent at half the stability bound | R² 0.736, RMSE 94.7 |
-| 2 | degree 3 in `temp` plus working-day × hour interactions | R² 0.918, RMSE 52.8 |
-| 3 | diagnosis: under-fit; target design with 282 weights | R² 0.941 (held-out days 0.946, chronological split 0.938) |
-| 4 | three penalised methods tied within noise; Lasso on the surviving features | R² 0.941, RMSE 44.7 |
-| 5 | "busier than three quarters of comparable hours" label, cut-off 0.25 | accuracy 0.784, F1 0.659, ROC-AUC 0.885 |
-
-These are the numbers of the committed artifacts. The source of truth is `artifacts/p1.json … p6.json`; the notebook
-and the report read them from there. Validation scores are slightly optimistic because tuning used the same rows;
-the report says where and gives the held-out-day and chronological estimates beside them.
-
-The chain was run twice. The first pass (git tag `v1-submitted`) fitted `log1p(cnt)` and ended at R² 0.939 on
-validation, 0.943 on held-out days and 0.914 chronologically. The second pass changes one thing, the target
-transform (a power transform with exponent 0.1, decision record 017), which mainly improves the estimate for unseen
-months. What else was tried and rejected is in decision record 018 and `exp/v2/`.
+| [rush_hour.ipynb](rush_hour.ipynb) | The executed notebook, built from `nb/`. It contains a configuration cell, then each stage with its expectation, code and outcome cells. It is self-contained: on Google Colab, upload only the notebook, `train.csv` and `test.csv` |
+| [report.pdf](report.pdf) | The report (six pages at most). Every number in it is read from the artifacts |
+| [sample_submission.csv](sample_submission.csv) | Predictions for `data/test.csv`, one row per test row in the same order. The provided empty template is `data/sample_submission.csv` |
+| [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) | A guide to the formulas, change-and-re-run drills and likely questions about the pipeline |
 
 ## Quick start
 
-Requirements: Python (built and tested on 3.14) with `numpy`, `pandas`, `scikit-learn` (used only for the one seeded
-`train_test_split` and as a test oracle), `matplotlib`, `pyyaml`, `threadpoolctl`, `nbformat`, `nbclient`,
-`ipykernel`, `markdown-it-py`, `pytest`, and optionally `ruff`. The PDF build needs Chrome or Edge.
+Requirements: Python (built and tested on 3.14) with `numpy`, `pandas`, `scikit-learn`, `matplotlib`, `pyyaml`, `threadpoolctl`, `nbformat`, `nbclient`, `ipykernel`, `markdown-it-py`, `pytest` and, optionally, `ruff`. The PDF build needs Chrome or Edge.
 
 ```bash
 pip install numpy pandas scikit-learn matplotlib pyyaml threadpoolctl nbformat nbclient ipykernel markdown-it-py pytest ruff
 ```
 
-Everything runs through `run.py` from the repository root. `run.py` is authoritative; the kit's `Makefile` is kept only for reference and may lag behind it, so no `make` is needed:
+`run.py` in the repository root is the task runner and the authoritative entry point. The `Makefile` is kept for reference and may lag behind it.
 
 | Command | What it does | Time |
 |---|---|---|
-| `python run.py all` | rebuild `artifacts/p1.json … p5.json`; a phase rebuilds when anything upstream changed | Phase 4 about 30 minutes, the rest minutes |
-| `python run.py p1` … `p5` | rebuild one phase | seconds, except Phase 4 |
-| `python -m src.bonus_control` | the k = 1 control for the asymmetric-cost bonus | seconds |
-| `python run.py submission` | refit the recommended model and write `sample_submission.csv` | seconds |
-| `python run.py nb` | assemble `nb/p*.py` into `rush_hour.ipynb` and execute it | |
-| `python run.py report` | render the report template and build the PDF | seconds |
-| `python run.py verify-fast` | lint, tests, leak scan, chain check, traceability counts | seconds |
-| `python run.py verify` | all of the above plus notebook run, submission check, report number trace | |
+| `python run.py all` | Rebuild `artifacts/p1.json` to `p5.json`. A stage rebuilds only when something upstream changed | Stage 4 takes about 30 minutes; the rest take minutes |
+| `python run.py p1` … `p5` | Rebuild one stage | Seconds, except stage 4 |
+| `python -m src.bonus_control` | Control experiment for the asymmetric-cost bonus | Seconds |
+| `python run.py submission` | Refit the recommended model and write `sample_submission.csv` | Seconds |
+| `python run.py nb` | Assemble `nb/p*.py` into `rush_hour.ipynb` and execute it | |
+| `python run.py report` | Render the report template and build the PDF | Seconds |
+| `python run.py verify-fast` | Lint, tests, leak scan, chain check and traceability counts | Seconds |
+| `python run.py verify` | All of the above, plus notebook execution, submission check and report number trace | |
 
-The notebook imports the modules in `src/`. Inside the repository it uses the files that are there; anywhere else
-(for example Google Colab) its setup cell unpacks its own copy of `src/`, `config.yaml` and `artifacts/` and asks for
-`train.csv` and `test.csv` if they are not next to it. Every phase cell loads the stored artifact when the configuration
-and the upstream artifact are unchanged; set `RECOMPUTE_ALL = True` in the configuration cell to recompute the chain.
-`python -X utf8 tools/standalone_check.py` re-runs the notebook in an empty folder with only the two data files.
+The notebook imports the modules in `src/`. Inside the repository it uses the files there. Elsewhere, such as on Google Colab, its setup cell unpacks its own copy of `src/`, `config.yaml` and `artifacts/`, and asks for `train.csv` and `test.csv` if they are not beside it. Each stage cell loads the stored artifact when its configuration and upstream artifact are unchanged. Set `RECOMPUTE_ALL = True` in the configuration cell to recompute the chain. `python -X utf8 tools/standalone_check.py` re-runs the notebook in an empty folder that holds only the two data files.
 
-### Team seed
+### Seed derivation
 
-The seed is derived from the team's student IDs in [config.yaml](config.yaml), never typed:
-`int(sha256("_".join(sorted(ids))).hexdigest(), 16) % 100000`. Changing `team_ids` changes the split and therefore
-every number; rebuild with `python run.py all`, `python -m src.bonus_control`, `python run.py submission`,
-`python run.py nb` and `python run.py report`.
+The seed is computed from the team IDs in [config.yaml](config.yaml), never typed in:
 
-## How the chain is enforced
+```python
+seed = int(sha256("_".join(sorted(team_ids))).hexdigest(), 16) % 100000
+```
 
-- Every artifact stores the SHA-256 of the artifact it consumed (`upstream_sha256`) and of the configuration.
-- Phase 2 starts from the Phase 1 weights, so its first loss must equal Phase 1's last loss; this is asserted.
-- Phase 3 is anchored at the Phase 2 design; Phase 4 builds on the Phase 3 target level; Phase 5 uses only the
-  Phase 4 survivors. `tools/chain_check.py` and assertions in the notebook check all of it.
-- Scalers, imputation values, expansions and class thresholds are fitted on the training rows only.
-  `data/test.csv` is read in one function and used only for the final predictions.
+Changing `team_ids` changes the split and therefore every number. To rebuild, run `python run.py all`, `python -m src.bonus_control`, `python run.py submission`, `python run.py nb` and `python run.py report`.
+
+## Engineering practices
+
+- Every stage is tested against the reference it should match. The gradient is checked numerically, and the solvers are compared with oracle implementations.
+- Scalers, imputation values, expansions and class thresholds are fitted on the training rows only, and tests check it.
+- Each change is traced to a documented requirement in `docs/TRACE.csv`, and `run.py verify` checks the traceability counts.
+- Design choices are recorded as short decision records (`docs/adr/`), each with the numbers behind it.
 
 ## Repository layout
 
 ```
-config.yaml            team IDs and every re-run knob
-run.py                 task runner (all, p1..p5, submission, nb, report, verify-fast, verify)
+config.yaml            team IDs and every re-run setting
+run.py                 task runner (all, p1 to p5, submission, nb, report, verify-fast, verify)
 data/                  train.csv, test.csv, sample_submission.csv (as provided)
 src/                   the implementation
   common.py            seed, split, metrics, artifact I/O with hash chaining
-  features.py          the feature design (fit on train, transform elsewhere)
+  features.py          the feature design (fitted on train, transformed elsewhere)
   gd.py, gd_asym.py    gradient descent, and the asymmetric-cost bonus
-  poly.py              lifting Phase 1 weights into the expanded design
-  validation.py        the three validators, learning curves
-  regularization.py    Ridge, coordinate-descent Lasso and Elastic Net, stability selection
+  poly.py              lifting the stage 1 weights into the expanded design
+  validation.py        the three validators and learning curves
+  regularization.py    Ridge, coordinate-descent Lasso, Elastic Net, stability selection
   verdicts.py          the per-column verdict rule
   logistic.py, labels.py   logistic regression, metrics, the high-demand label
-  phases/p1.py … p5.py one module per phase: load upstream artifact, compute, write artifact
+  phases/p1.py to p5.py    one module per stage: load upstream artifact, compute, write artifact
   predict.py           the only module that touches the hidden test rows
-nb/                    notebook cells as plain percent-format files, one per phase
-artifacts/             p1.json … p6.json, the numeric hand-overs between phases
+nb/                    notebook cells as plain percent-format files, one per stage
+artifacts/             p1.json to p6.json, the numeric hand-overs between stages
 report/                report template with {{artifact.key}} placeholders, figure and PDF builders
 tests/                 unit tests: gradient checks, oracle comparisons, leakage and determinism tests
-tools/                 checkers: leak_scan, chain_check, submission_check, number_trace, build_nb, …
-docs/                  SPEC, ARCHITECTURE, DATA_CARD, decision records (adr/), TRACE.csv, WALKTHROUGH
-reports/               verification gates, the analyst's audit, the independent final audit
+tools/                 checkers: leak_scan, chain_check, submission_check, number_trace, build_nb
+docs/                  specification, architecture, data card, decision records, traceability, walkthrough
+reports/               verification gates and audits
 exp/                   exploratory and diagnostic scripts; nothing here enters the pipeline
-handoff/               task specs and receipts from the build process
 ```
 
 ## Documentation map
 
-| If you want to know… | Read |
+| If you want to know | Read |
 |---|---|
-| what is required and how each requirement is checked | [docs/SPEC.md](docs/SPEC.md), [docs/TRACE.csv](docs/TRACE.csv) |
-| why a choice was made, with the numbers behind it | [docs/adr/](docs/adr/) (18 short decision records) |
-| how unclear points in the brief were read | [handoff/AMBIGUITIES.md](handoff/AMBIGUITIES.md) |
-| what the data looks like | [docs/DATA_CARD.md](docs/DATA_CARD.md) |
-| module interfaces and determinism rules | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| what was verified and what an examiner might attack | [reports/verify/](reports/verify/), [reports/analysis/audit.md](reports/analysis/audit.md) |
-| current status and open items | [STATE.md](STATE.md) |
-
-## How this was built
-
-The pipeline was produced with Claude Code under the orchestration prompt in
-[Opus55_Sonnet55_Master_Prompt_v2.md](Opus55_Sonnet55_Master_Prompt_v2.md): a lead agent made the design decisions
-and wrote the prose, and sub-agents wrote code, tests and audits from the specs in `handoff/specs/`. The git history,
-`handoff/` and [TOKENS.md](TOKENS.md) record that process. Rules and designs were changed after first results
-(decision records 013 to 017); the notebook and the report disclose each of them.
+| What is required and how each requirement is checked | [docs/SPEC.md](docs/SPEC.md), [docs/TRACE.csv](docs/TRACE.csv) |
+| Why a choice was made, with the numbers behind it | [docs/adr/](docs/adr/) (18 decision records) |
+| What the data looks like | [docs/DATA_CARD.md](docs/DATA_CARD.md) |
+| Module interfaces and determinism rules | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| What was verified and what could be challenged | [reports/verify/](reports/verify/), [reports/analysis/](reports/analysis/) |
+| Current status and open items | [STATE.md](STATE.md) |
 
 ## Known limits
 
-- The trend is a straight line on the transformed scale: sound inside 2011–2012, somewhat too steep beyond it.
+- The trend is a straight line on the transformed scale. It fits well within 2011 and 2012 and runs somewhat too steep beyond that.
 - The data contains no zero-demand hours, so the model has never seen one.
-- Phase 4 takes about 30 minutes, so changing an early setting is slow to propagate; see the drills in
-  [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) for quicker demonstrations.
+- Stage 4 takes about 30 minutes. Changing an early setting is therefore slow to propagate. [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) describes faster demonstrations.
+- Validation scores are slightly optimistic, as noted above.
